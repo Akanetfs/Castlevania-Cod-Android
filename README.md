@@ -2,44 +2,33 @@
 
 An unofficial Android port of *Castlevania: Curse of Darkness*, based on the original Xbox release.
 
+This project does not include any game assets and nor will it include any type of file related to the original game
+
 The project uses ahead-of-time recompilation of the game's x86 code to C++, with an Android native host. Rendering is handled through Vulkan; platform input, audio and window integration use SDL3.
 
-> **Work in progress:** this port is under active development. Features and compatibility may change.
+## Features
 
-> **Game files are not included.** You must provide the required data from your own legally acquired copy of the game. Do not upload game disc images, executable files, copyrighted assets, generated game code, or save data to this repository.
+I’ve added a couple of extra features, in addition to touch controls and game controllers. You can access these options by holding down the Select button anywhere in the game (in a menu or during gameplay).
 
-## Current development status
+##Render resolution
 
-The Android port is being developed with:
-- Touchscreen controls and external gamepad support.
-- Audio integration for menus, gameplay and cinematics.
-- Ongoing work on cinematic playback and compatibility.
-- Vulkan-based rendering and Android-native integration.
+- You can adjust the resolution within the game itself, ranging from 1170x540 (50%) up to a maximum of 150% (3510x1620).
 
-Some areas may work while others still have bugs. Check the repository's Issues and Releases for the latest public status.
+## Controls
 
-## Repository layout
+You can change the position, opacity, and size of the touch buttons from within the game itself.
 
-```text
-.
-├── app/                  # Android application module (Java, resources, manifest)
-├── config/               # Recompiler configuration
-├── native/               # Android native host and platform integration
-├── src/                  # Game hooks, audio, graphics and common code
-├── tools/                # Recompiler helper tools
-├── CMakeLists.txt        # Native build configuration
-├── build.gradle          # Root Gradle configuration
-├── build.bat             # Windows build/recompilation script
-├── gradle.properties
-├── gradlew
-└── README.md
-```
+## Controller button mapping
 
-Some dependencies are fetched during configuration/build and are not committed as vendored source.
+From the launcher, you can map your controller buttons however you prefer.
 
-## Requirements
+## Additional save file
 
-The documented build workflow targets Windows and Android **arm64-v8a**.
+This save file is useful in case you uninstall the app; when you decide to reinstall it, you can load your game from the `storage/Castlevania` folder. (Note that if you uninstall or update the app, all game data will be lost.)
+
+## Game information
+
+You can display both the FPS and resolution within the game itself to monitor performance.
 
 Install the following tools:
 
@@ -97,13 +86,6 @@ Install the APK, then follow the in-app instructions for placing the required ga
 
 The application uses the package ID `com.codandroid.recomp`. Android application data and save locations are managed by the app; avoid deleting application data if you need to preserve local saves.
 
-## Troubleshooting
-
-- **Missing game/recompiled code:** confirm that `assets/default.xbe` or a supported ISO is present locally, then run `build.bat` again.
-- **Missing Android toolchain:** verify the installed SDK Platform, NDK and CMake versions against the Requirements section.
-- **SDL3 checkout errors:** check your Git installation and network access; Gradle fetches the pinned SDL3 source when it is not already present.
-- **Build or runtime bugs:** include the full build output or relevant device log when opening an Issue. Do not attach copyrighted game files.
-
 ## Credits and third-party software
 
 This project builds on work and libraries from:
@@ -113,6 +95,7 @@ This project builds on work and libraries from:
 - [glslang](https://github.com/KhronosGroup/glslang)
 - [toml++](https://github.com/marzer/tomlplusplus)
 - [Dear ImGui](https://github.com/ocornut/imgui)
+- [Black for Android](https://github.com/RanggaCasper/Black-Android)
 
 Their respective authors retain ownership of their work. Third-party components remain subject to their own licenses; see their upstream repositories and included license notices.
 
