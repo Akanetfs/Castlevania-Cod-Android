@@ -10,27 +10,27 @@ The project uses ahead-of-time recompilation of the game's x86 code to C++, with
 
 I’ve added a couple of extra features, in addition to touch controls and game controllers. You can access these options by holding down the Select button anywhere in the game (in a menu or during gameplay).
 
-##Render resolution
+Render resolution
 
 - You can adjust the resolution within the game itself, ranging from 1170x540 (50%) up to a maximum of 150% (3510x1620).
 
-## Controls
+Controls
 
-You can change the position, opacity, and size of the touch buttons from within the game itself.
+- You can change the position, opacity, and size of the touch buttons from within the game itself.
 
-## Controller button mapping
+Controller button mapping
 
-From the launcher, you can map your controller buttons however you prefer.
+- From the launcher, you can map your controller buttons however you prefer.
 
-## Additional save file
+Additional save file
 
-This save file is useful in case you uninstall the app; when you decide to reinstall it, you can load your game from the `storage/Castlevania` folder. (Note that if you uninstall or update the app, all game data will be lost.)
+- This save file is useful in case you uninstall the app; when you decide to reinstall it, you can load your game from the `storage/Castlevania` folder. (Note that if you uninstall or update the app, all game data will be lost.)
 
-## Game information
+Game information
 
-You can display both the FPS and resolution within the game itself to monitor performance.
+- You can display both the FPS and resolution within the game itself to monitor performance.
 
-Install the following tools:
+## Install the following tools:
 
 - Visual Studio 2022 with **Desktop development with C++**.
 - Android Studio and Android SDK Platform 34.
