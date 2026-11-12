@@ -1,0 +1,65 @@
+# Android / Gradle
+.gradle/
+**/build/
+**/.cxx/
+local.properties
+.idea/
+*.iml
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# IDE / editor
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Native build output and generated binaries
+out/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.exe
+*.pdb
+
+# Downloaded / generated dependencies
+/third_party/
+/sdk/
+/tools/build/
+/tools/_deps/
+
+# Recompiled game code and proprietary game data
+/generated/
+/assets/
+/iso/
+*.xbe
+*.iso
+*.xiso
+*.xbe.*
+Castlevania/
+saves_backup/
+saves_before_restore/
+hdd/
+
+# Signing credentials and local secrets
+*.jks
+*.keystore
+keystore.properties
+gradle.properties.local
+.env
+.env.*
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db

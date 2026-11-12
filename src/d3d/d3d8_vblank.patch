@@ -1,0 +1,65 @@
+--- a/src/d3d/d3d8.cpp	2026-10-31 23:06:47.089537836 +0000
++++ b/src/d3d/d3d8.cpp	2026-10-31 23:06:47.089537836 +0000
+@@ -4,6 +4,7 @@
+ #include <atomic>
+ #include <chrono>
+ #include <map>
++#include <thread>
+ #include <unordered_map>
+ #include <unordered_set>
+ 
+@@ -235,6 +236,38 @@
+ #endif
+ }
+ 
++// The library's vertical blank interrupt, which nothing stood in for on this host. On the console the miniport
++// counts blanks at CDevice+0x1DE8 (XDK 5849: the handler 0x4A2FD1 increments it), signals the notification event at
++// +0x1DBC and calls the title's callback stored at +0x1DB8. D3DDevice_GetRasterStatus (0x003BA010 in this image)
++// returns that count, and the XMV decoder paces its frames by it: with the count stuck at 0 it shows its first
++// frame and never a second. Same as the SDK's own d3d8.cpp, which runs this on a host thread at 60 Hz.
++constexpr uint32_t kVBlankCountOff = 0x1DE8, kVBlankEventOff = 0x1DBC, kVBlankCallbackOff = 0x1DB8;
++
++void VerticalBlank(X86Context& ctx) {
++    using clock = std::chrono::steady_clock;
++    uint32_t info = mem::AllocSystem(12), shown = 0;
++    auto next = clock::now();
++    for (;;) {
++        next = std::max(next + std::chrono::microseconds(16667), clock::now());
++        std::this_thread::sleep_until(next);
++        uint32_t count = Dev(kVBlankCountOff) + 1, swaps = Dev(kDevSwapCount);
++        SetDev(kVBlankCountOff, count);
++        ObjectRef event = FromPointer(kDevice + kVBlankEventOff);
++        SetEvent(*event);
++        if (uint32_t callback = Dev(kVBlankCallbackOff)) {
++            // blank count, swaps shown, 1 when this blank showed one
++            W32(info, count);
++            W32(info + 4, swaps);
++            W32(info + 8, swaps != shown);
++            CallGuest(ctx, callback, {info});
++        }
++        shown = swaps;
++        // the title clears the event in its own memory before a wait, which the host object does not see
++        std::this_thread::sleep_for(std::chrono::milliseconds(1));
++        ResetEvent(*event);
++    }
++}
++
+ }  // namespace
+ 
+ gpu::State& State() { return g_state; }
+@@ -349,6 +382,15 @@
+     g_state.rt = SurfaceOf(g_buffers[1]);
+     g_state.zs = SurfaceOf(g_depth);
+     UpdateViewportConstants();
++    // vertical blank: the notification event starts signalled, and the thread counts from here
++    SetDev(kVBlankEventOff, 0x00040000);
++    SetDev(kVBlankEventOff + 4, 1);
++    static bool vblank_started = false;
++    if (!vblank_started) {
++        StartHostThread("vertical blank", VerticalBlank);
++        LOGI("d3d: vertical blank thread started (count at CDevice+%X)", kVBlankCountOff);
++    }
++    vblank_started = true;
+     ApplyDefaultStates(ctx);
+     if (a[5]) W32(a[5], kDevice);
+     return 0;
