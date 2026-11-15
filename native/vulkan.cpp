@@ -94,7 +94,8 @@ float4 psmain(O i) : SV_Target {
     c /= n * n;
     c.rgb *= opts.w;
     if (opts.x > 0) c.rgb = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
-    return float4(c.rgb, opts.y > 0 ? c.a : 1);
+    // opts.y: 0 opaque, 1 the picture's own alpha, 2 half (c.rgb already taken to half by opts.w): a frame blended 50%
+    return float4(c.rgb, opts.y > 1.5 ? 0.5 : (opts.y > 0 ? c.a : 1));
 }
 )";
 
@@ -557,6 +558,8 @@ struct Tex {
     TextureDesc d;
     VkFormat fmt = VK_FORMAT_UNDEFINED;
     bool decode = false;  // DXT decoded on the CPU
+    bool genmips = false;  // the game gave one level; the chain below it was made here (anisotropic filtering on)
+    bool had_aniso = false;  // the setting when it was made: a change makes it again
     uint32_t levels = 1;
     uint64_t sig = 0;
     uint64_t frame = 0;
@@ -588,6 +591,7 @@ struct BlitOptions {
     uint32_t taps = 1;
     float mul = 1;
     bool over = false;  // premultiplied over the target, which keeps its alpha
+    bool half = false;  // with over and mul 0.5: this at half over what the target holds (the film's middle frames)
 };
 
 struct DrawTextures {
@@ -1039,6 +1043,9 @@ public:
     void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) override;
     void Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects, uint32_t dst_points) override;
     void Present(const Surface& front) override;
+    void PresentTarget(Target* t);
+    int MovieMid(Target& t);
+    void MovieRestore(Target& t);
     void Sync(uint32_t data, uint32_t size) override;
     void SyncLate(uint32_t data) override;
     bool DeliverLate(uint32_t data) override;
@@ -1251,6 +1258,9 @@ private:
     std::unordered_map<uint64_t, Target> targets_;
     std::unordered_map<uint64_t, Tex> textures_;
     Image lut_;
+    Image mv_prev_, mv_cur_;  // FMV 60 fps: the film's last frame and the one being shown
+    bool mv_have_ = false;
+    uint32_t mv_epoch_ = 0;
     Image dummy_[3];  // 2D, 3D, cube
     VkSampler linear_ = VK_NULL_HANDLE, point_ = VK_NULL_HANDLE;
     VkDescriptorPool ui_pool_ = VK_NULL_HANDLE;
@@ -2396,6 +2406,8 @@ VkSampler VulkanBackend::StageSampler(const State& s, int i, const DrawTextures&
     const auto& t = s.tss[size_t(i)];
     uint32_t mag = t[kTssMagFilter], min = t[kTssMinFilter], mip = t[kTssMipFilter];
     auto lin = [](uint32_t f) { return f >= kTexfLinear; };
+    // a texture that got a chain made for it (CreateTexture) is read through it, whatever mip filter the game set
+    if (app::Get().aniso && stages.levels[i] > 1 && !stages.rt[i] && !mip) mip = kTexfLinear;
     bool filterable = stages.fmt[i] != VK_FORMAT_R32_SFLOAT || r32f_linear_;
     sd.minFilter = lin(min) && filterable ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
     sd.magFilter = lin(mag) && filterable ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
@@ -2403,8 +2415,9 @@ VkSampler VulkanBackend::StageSampler(const State& s, int i, const DrawTextures&
     bool anisotropic = min == kTexfAnisotropic || mag == kTexfAnisotropic;
     uint32_t an = anisotropic ? std::max<uint32_t>(t[kTssMaxAnisotropy], 1) : 1;
     uint32_t aniso = app::Get().aniso;
-    bool mipped = mip && stages.levels[i] > 1;
-    if (aniso && lin(min) && mipped && !stages.info[i].shadow) an = aniso;
+    // the game's own textures have no mip levels, so this setting used to leave them alone: a floor or wall seen at an
+    // angle shimmered in the distance. Filtered anisotropically with the one level they have it stays steady
+    if (aniso && lin(min) && !stages.rt[i] && !stages.info[i].shadow) an = aniso;
     if (an > 1 && feats_.samplerAnisotropy) {
         sd.anisotropyEnable = VK_TRUE;
         sd.maxAnisotropy = std::min(float(an), props_.limits.maxSamplerAnisotropy);
@@ -2548,6 +2561,7 @@ void VulkanBackend::UploadTarget(Target& t, const Surface& s) {
 void VulkanBackend::Blit(Image& dst, const VkRect2D& to, Image& src, const float uvrect[4], const BlitOptions& o) {
     float c[8] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3], o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f,
                   float(o.taps), o.mul};
+    if (o.half) c[5] = 2.0f;
     Alloc cb = Constants(c, sizeof(c));
     VkPipeline pipe = FullScreenPipeline(kBlitHlsl, "psmain", dst.fmt, VK_FORMAT_UNDEFINED, o.over);
     if (!pipe) return;
@@ -2742,6 +2756,15 @@ bool VulkanBackend::CreateTexture(Tex& tx, const TextureDesc& d, const FormatInf
         h = (h + 3) & ~3u;
         tx.levels = 1;
     }
+    // the game's textures come without mip levels, so what is far or at an angle can only be stepped over. With
+    // anisotropic filtering on they get a chain here (box filter, in UploadTexture), which the sampler then reads
+    tx.had_aniso = app::Get().aniso != 0;
+    if (tx.had_aniso && tx.levels == 1 && tx.fmt == kBgra && !d.cube && d.depth == 1 && !d.linear && w > 1 && h > 1) {
+        uint32_t n = 1;
+        while ((w >> n) > 0 || (h >> n) > 0) n++;
+        tx.levels = n;
+        tx.genmips = true;
+    }
     VkImageViewType vt = d.cube ? VK_IMAGE_VIEW_TYPE_CUBE : d.depth > 1 ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D;
     if (!CreateImage(tx.img, tx.fmt, w, h, d.cube ? 1 : d.depth, d.cube ? 6 : 1, tx.levels,
                      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, vt, d.cube)) {
@@ -2755,19 +2778,52 @@ void VulkanBackend::UploadTexture(Tex& tx, const TextureDesc& d, const FormatInf
                                   const uint32_t* colours) {
     Transition(tx.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     uint32_t faces = d.cube ? 6 : 1;
-    std::vector<uint8_t> px, decoded;
+    std::vector<uint8_t> px, decoded, chain;  // chain: the level above, BGRA packed, for a made chain
     bool bc = fi.compressed && !tx.decode;
     uint32_t block = fi.host == Host::BC1 ? 8 : 16;
     for (uint32_t f = 0; f < faces; f++)
         for (uint32_t l = 0; l < tx.levels; l++) {
-            uint32_t pitch;
-            DecodeLevel(d, l, f, p, colours, px, pitch);
+            uint32_t pitch = 0;
             uint32_t mw = std::max(tx.img.w >> l, 1u), mh = std::max(tx.img.h >> l, 1u), md = std::max(tx.img.d >> l, 1u);
             const std::vector<uint8_t>* src = &px;
-            if (tx.decode) {
-                DecodeDxt(fi.host, px, pitch, mw, mh, md, decoded);
+            if (tx.genmips && l > 0) {
+                // the level above halved, 2x2 texels into one, colour weighted by alpha so clear texels do not darken edges
+                uint32_t pw = std::max(tx.img.w >> (l - 1), 1u), ph = std::max(tx.img.h >> (l - 1), 1u);
+                std::vector<uint8_t> next(size_t(mw) * mh * 4);
+                for (uint32_t y = 0; y < mh; y++)
+                    for (uint32_t x = 0; x < mw; x++) {
+                        uint32_t x0 = std::min(x * 2, pw - 1), x1 = std::min(x * 2 + 1, pw - 1);
+                        uint32_t y0 = std::min(y * 2, ph - 1), y1 = std::min(y * 2 + 1, ph - 1);
+                        const uint8_t* t4[4] = {&chain[(size_t(y0) * pw + x0) * 4], &chain[(size_t(y0) * pw + x1) * 4],
+                                                &chain[(size_t(y1) * pw + x0) * 4], &chain[(size_t(y1) * pw + x1) * 4]};
+                        uint32_t a = 0, c[3] = {0, 0, 0}, plain[3] = {0, 0, 0};
+                        for (const uint8_t* q : t4) {
+                            a += q[3];
+                            for (int k = 0; k < 3; k++) {
+                                c[k] += q[k] * q[3];
+                                plain[k] += q[k];
+                            }
+                        }
+                        uint8_t* o = &next[(size_t(y) * mw + x) * 4];
+                        for (int k = 0; k < 3; k++) o[k] = uint8_t(a ? (c[k] + a / 2) / a : (plain[k] + 2) / 4);
+                        o[3] = uint8_t((a + 2) / 4);
+                    }
+                chain.swap(next);
+                src = &chain;
                 pitch = mw * 4;
-                src = &decoded;
+            } else {
+                DecodeLevel(d, l, f, p, colours, px, pitch);
+                if (tx.decode) {
+                    DecodeDxt(fi.host, px, pitch, mw, mh, md, decoded);
+                    pitch = mw * 4;
+                    src = &decoded;
+                }
+                if (tx.genmips) {  // level 0 kept packed to make the next from it
+                    chain.assign(size_t(mw) * mh * 4, 0);
+                    size_t have = pitch ? src->size() / pitch : 0;
+                    for (uint32_t y = 0; y < mh && y < have; y++)
+                        std::memcpy(&chain[size_t(y) * mw * 4], &(*src)[size_t(y) * pitch], std::min<size_t>(pitch, size_t(mw) * 4));
+                }
             }
             // rows as Vulkan reads them packed: block rows for DXT, texel rows else
             uint32_t row = bc ? std::max(1u, (mw + 3) / 4) * block : mw * 4;
@@ -2794,7 +2850,7 @@ VkImageView VulkanBackend::BindGuestTexture(const State& s, int stage, const Tex
     ReadStagePalette(s, stage, d, palette);
     const uint64_t key = uint64_t(palette.va) << 32 | d.data;
     Tex& tx = textures_[key];
-    bool same = SameTexture(tx, d);
+    bool same = SameTexture(tx, d) && tx.had_aniso == (app::Get().aniso != 0);
     if (!same && !CreateTexture(tx, d, fi, key)) return VK_NULL_HANDLE;
     Tex& t = textures_[key];
     if (t.frame != presents_ + 1 || !same || t.palette != palette.hash) {
@@ -3345,6 +3401,12 @@ void VulkanBackend::DrawFrame(Target* t, uint32_t index) {
     // opts.z: the taps a side over each screen pixel, 2 averaging SSAA's samples
     float c[24] = {0, 0, 1, 1, gamma_ ? 1.0f : 0.0f, 0, ssaa ? 2.0f : 1.0f, 1};
     c[4] = 0.0f;
+    // the console's overscan: the frame's edge is cut off (the uv rectangle: offset, then size)
+    {
+        float cut = std::min(game::Opt().overscan, 150u) / 1000.0f;
+        c[0] = c[1] = cut;
+        c[2] = c[3] = 1.0f - 2.0f * cut;
+    }
     c[20] = game::Opt().hdr ? 1.0f : 0.0f;
     c[21] = fxaa ? 1.0f : 0.0f;
     if (t) {
@@ -3624,7 +3686,7 @@ void VulkanBackend::Present(const Surface& front) {
                 const double game = std::chrono::duration<double, std::milli>(t0 - last_end).count();
                 const double inside = std::chrono::duration<double, std::milli>(now - t0).count();
                 static std::atomic<uint32_t> logged{0};
-                if (game + inside > 26.0 && logged++ < 300)
+                if (game + inside > 26.0 && !(game::Opt().fmv_interp && MovieActive()) && logged++ < 300)
                     LOGI("tiron: cuadro de %.1f ms (juego %.1f + present %.1f) presente %llu resolucion %u%%", game + inside, game,
                          inside, (unsigned long long)n, dynres::Percent());
             }
@@ -3696,6 +3758,30 @@ void VulkanBackend::Present(const Surface& front) {
             LOGI("diag: no se pudo leer el target en present %llu", (unsigned long long)presents_);
         }
     }
+    // FMV a 60: la pelicula (30 fps) entrega un cuadro cada dos refrescos; entre cada dos se presenta una mezcla al 50%
+    // del anterior y el nuevo, y luego el nuevo. Con la opcion apagada, o fuera de una pelicula, nada de esto corre
+    if (t && game::Opt().fmv_interp && MovieActive()) {
+        const int m = MovieMid(*t);  // 0 sin copia, 1 copia hecha sin cuadro anterior, 2 ademas la mezcla dibujada
+        if (m == 2) {
+            const auto t_mid = std::chrono::steady_clock::now();
+            PresentTarget(t);
+            MovieRestore(*t);
+            // sin vsync los dos presentes saldrian seguidos: el nuevo espera a que pase un refresco de 60 Hz
+            std::this_thread::sleep_until(t_mid + std::chrono::microseconds(16667));
+        }
+        PresentTarget(t);
+        if (m) {
+            std::swap(mv_prev_, mv_cur_);
+            mv_have_ = true;
+        }
+    } else {
+        mv_have_ = false;
+        PresentTarget(t);
+    }
+}
+
+// the frame onto the screen and on to the next one: what Present did for every frame of the game
+void VulkanBackend::PresentTarget(Target* t) {
     g_diag.trace = false;
     if (ramp_dirty_) UploadGammaRamp();
     if (!skin_tried_) UploadSkin();
@@ -3755,6 +3841,46 @@ void VulkanBackend::Present(const Surface& front) {
     if (presents_ % 600 == 0) SavePipelineCache();
     dynres::Frame();
     ApplySettings();
+}
+
+// FMV 60 fps: keeps a copy of the film's frame and, when there is a frame before it, draws their half and half into
+// the presented target (the film uploads a whole new frame there each time, so nothing of the game is lost)
+int VulkanBackend::MovieMid(Target& t) {
+    if (!t.img || t.depth) return 0;
+    if (mv_cur_ && (mv_cur_.w != t.w || mv_cur_.h != t.h || mv_cur_.fmt != t.img.fmt)) {
+        Retire(mv_prev_);
+        Retire(mv_cur_);
+        mv_have_ = false;
+    }
+    const VkImageUsageFlags use = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (!mv_cur_ && !CreateImage(mv_cur_, t.img.fmt, t.w, t.h, 1, 1, 1, use, VK_IMAGE_VIEW_TYPE_2D)) return 0;
+    if (!mv_prev_ && !CreateImage(mv_prev_, t.img.fmt, t.w, t.h, 1, 1, 1, use, VK_IMAGE_VIEW_TYPE_2D)) {
+        Retire(mv_cur_);
+        return 0;
+    }
+    const uint32_t epoch = MovieEpoch();
+    if (epoch != mv_epoch_) {  // another film: its first frame has no one before it
+        mv_epoch_ = epoch;
+        mv_have_ = false;
+    }
+    Transition(t.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    Transition(mv_cur_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {t.w, t.h, 1}};
+    vkCmdCopyImage(Cb(), t.img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, mv_cur_.image,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+    Transition(mv_cur_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (!mv_have_) return 1;
+    const float uv[4] = {0, 0, 1, 1};
+    const VkRect2D all{{0, 0}, {t.w, t.h}};
+    Blit(t.img, all, mv_prev_, uv, {});
+    Blit(t.img, all, mv_cur_, uv, {.mul = 0.5f, .over = true, .half = true});
+    return 2;
+}
+
+// the film's own frame back into the target after the middle one was shown
+void VulkanBackend::MovieRestore(Target& t) {
+    const float uv[4] = {0, 0, 1, 1};
+    Blit(t.img, {{0, 0}, {t.w, t.h}}, mv_cur_, uv, {});
 }
 
 // the slot is not reused before the caller's wait: the title runs at most one present ahead
