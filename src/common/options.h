@@ -17,6 +17,7 @@ struct Options {
     bool show_resolution = false;  // overlay: the real render resolution (and the output's) under the FPS
     std::string game_path;  // set by the launcher (--game) or cod.toml: folder with default.xbe, or the .iso
     uint32_t fmv_scale = 0;  // 4:3 films on a wider screen: 0 fill it, top and bottom cut; 1 kept 4:3
+    bool fmv_interp = false;  // the films (30 fps) shown at 60: a frame between each two, blended (native/vulkan.cpp)
     // a look over the frame: 0 none, 1 and 2 a CRT (light, strong), 3 sharpen, 4 vibrant, 5 noir, 6 sepia,
     // 7 night vision, 8 VHS
     uint32_t screen_filter = 0;
@@ -24,6 +25,10 @@ struct Options {
     bool bloom = true;  // the glow added over bright parts of the frame (native/vulkan.cpp)
     bool fog = true;
     uint32_t anti_aliasing = 0;  // 0 off, 1 FXAA as the frame goes onto the screen, 2 SSAA: twice the resolution
+    // the game's picture has a border outside the TV's safe area that the console's overscan hid: smeared edge
+    // pixels, seen on a phone's whole screen. Each side of the frame is cut by this many tenths of a percent,
+    // zooming the rest in; 0 shows the whole frame
+    uint32_t overscan = 40;
     bool hdr = false;  // a tone map that brings back the colours the console's overbright look burns out
     uint32_t draw_distance = 1;  // times the game's LOD and draw distances
     // the render resolution follows the frame rate (native/dynamic_resolution.cpp): down when it falls under the
